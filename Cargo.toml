@@ -1,5 +1,5 @@
 [package]
-name = "OS_RUST"
+name = "os_rust"
 version = "0.1.0"
 authors = ["boyuan"]
 edition = "2018"
