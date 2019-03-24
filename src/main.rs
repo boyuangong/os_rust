@@ -29,7 +29,7 @@ pub extern "C" fn _start() -> ! {
 
     println!("It did not crush!");
 
-    loop {}
+    os_rust::hlt_loop();
 }
 
 /// This function is called on panic.
@@ -37,5 +37,5 @@ pub extern "C" fn _start() -> ! {
 #[panic_handler]
 fn panic(info: &PanicInfo) -> ! {
     println!("{}", info);
-    loop {}
+    os_rust::hlt_loop();
 }
