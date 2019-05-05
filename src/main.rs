@@ -3,12 +3,20 @@
 #![cfg_attr(test, allow(unused_imports))]
 
 use os_rust::println;
+use bootloader::{bootinfo::BootInfo, entry_point};
 use core::panic::PanicInfo;
 
+
+entry_point!(kernel_main);
+
 #[cfg(not(test))]
-#[no_mangle]
-pub extern "C" fn _start() -> ! {
+fn kernel_main(boot_info: &'static BootInfo) -> ! {
     use os_rust::interrupts::PICS;
+    use os_rust::memory::{self, create_example_mapping, EmptyFrameAllocator};
+    use x86_64::VirtAddr;
+    use x86_64::structures::paging::{
+        FrameAllocator, Mapper, Page, PageTable, PhysFrame, RecursivePageTable, Size4KiB,
+    };
 
     println!("Hello World{}", "!");
 
@@ -17,37 +25,38 @@ pub extern "C" fn _start() -> ! {
     unsafe { PICS.lock().initialize() };
     x86_64::instructions::interrupts::enable();
 
-    // Retrive address of level 4 page table
-    use x86_64::registers::control::Cr3;
+    let mut recursive_page_table = unsafe { memory::init(boot_info.p4_table_addr as usize) };
+    let mut frame_allocator = memory::init_frame_allocator(&boot_info.memory_map);
 
-    let (level_4_page_table, _) = Cr3::read();
-    println!("Level 4 page table at: {:?}", level_4_page_table.start_address());
-
-    // print first 10 entries of level 4 page table
-    use x86_64::structures::paging::PageTable;
-
-    let level_4_table_ptr = 0xffff_ffff_ffff_f000 as *const PageTable;
-    let level_4_table = unsafe { &*level_4_table_ptr };
-    for i in 0..10 {
-        println!("Entry {}: {:?}", i, level_4_table[i]);
+    for _i in 1..100 {
+        println!("{:?}", frame_allocator.allocate_frame());
     }
 
-//    // invoke a breakpoint exception
-//    x86_64::instructions::int3();
 
-//    fn stack_overflow() {
-//        stack_overflow(); // for each recursion, the return address is pushed
-//    }
-//
-//    // trigger a stack overflow
-//    stack_overflow();
 
-    // provoke a page fault
-    let ptr = 0xdeadbeaf as *mut u32;
-    unsafe { *ptr = 42; }
+    let addresses = [
+        // the identity-mapped vga buffer page
+        0xb8000,
+        // some code page
+        0x20010a,
+        // some stack page
+        0x57ac_001f_fe48,
+        // virtual address mapped to physical address 0
+    ];
 
-    println!("It did not crush!");
+    for &address in &addresses {
+        let page: Page = Page::containing_address(VirtAddr::new(address));
+        // new: use the `mapper.translate_addr` method
+        let phys = recursive_page_table.translate_page(page);
+        println!("{:?} -> {:?}", page, phys);
+    }
 
+
+    create_example_mapping(&mut recursive_page_table, &mut frame_allocator);
+    unsafe { (0xdeadbeaf900 as *mut u64).write_volatile(0xf021f077f065f04e) };
+
+
+    println!("It did not crash!");
     os_rust::hlt_loop();
 }
 
