@@ -5,6 +5,7 @@ use x86_64::structures::paging::{
 
 use x86_64::{PhysAddr, VirtAddr};
 
+
 /// Creates a RecursivePageTable instance from the level 4 address.
 ///
 /// This function is unsafe because it can break memory safety if an invalid
