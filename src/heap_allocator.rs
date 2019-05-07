@@ -7,8 +7,6 @@ use core::alloc::{GlobalAlloc};
 
 use core::ops::Deref;
 
-
-
 use spin::Mutex;
 
 /// A fixed size heap backed by a linked list of free memory blocks.

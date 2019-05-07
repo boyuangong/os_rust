@@ -22,9 +22,9 @@ pub mod vga_buffer;
 pub mod interrupts;
 pub mod memory;
 pub mod hole;
-pub mod linked_list_allocator;
+pub mod heap_allocator;
 
-use linked_list_allocator::LockedHeap;
+use heap_allocator::LockedHeap;
 
 
 pub unsafe fn exit_qemu() {

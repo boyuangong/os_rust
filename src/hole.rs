@@ -125,7 +125,57 @@ fn allocate_first_fit(mut previous: &mut Hole, layout: Layout) -> Result<Allocat
 /// padding occurs if the required size is smaller than the size of the aligned hole. All padding
 /// must be at least `HoleList::min_size()` big or the hole is unusable.
 fn split_hole(hole: HoleInfo, required_layout: Layout) -> Option<Allocation> {
-    return None;
+    let required_size = required_layout.size();
+    let required_align = required_layout.align();
+
+    let (aligned_addr, front_padding) = if hole.addr == align_up(hole.addr, required_align) {
+        // hole has already the required alignment
+        (hole.addr, None)
+    } else {
+        // the required alignment causes some padding before the allocation
+        let aligned_addr = align_up(hole.addr + HoleList::min_size(), required_align);
+        (
+            aligned_addr,
+            Some(HoleInfo {
+                addr: hole.addr,
+                size: aligned_addr - hole.addr,
+            }),
+        )
+    };
+
+    let aligned_hole = {
+        if aligned_addr + required_size > hole.addr + hole.size {
+            // hole is too small
+            return None;
+        }
+        HoleInfo {
+            addr: aligned_addr,
+            size: hole.size - (aligned_addr - hole.addr),
+        }
+    };
+
+    let back_padding = if aligned_hole.size == required_size {
+        // the aligned hole has exactly the size that's needed, no padding accrues
+        None
+    } else if aligned_hole.size - required_size < HoleList::min_size() {
+        // we can't use this hole since its remains would form a new, too small hole
+        return None;
+    } else {
+        // the hole is bigger than necessary, so there is some padding behind the allocation
+        Some(HoleInfo {
+            addr: aligned_hole.addr + required_size,
+            size: aligned_hole.size - required_size,
+        })
+    };
+
+    Some(Allocation {
+        info: HoleInfo {
+            addr: aligned_hole.addr,
+            size: required_size,
+        },
+        front_padding: front_padding,
+        back_padding: back_padding,
+    })
 }
 
 
@@ -146,4 +196,22 @@ impl Heap {
             holes: HoleList::empty(),
         }
     }
+}
+
+/// Align downwards. Returns the greatest x with alignment `align`
+/// so that x <= addr. The alignment must be a power of 2.
+pub fn align_down(addr: usize, align: usize) -> usize {
+    if align.is_power_of_two() {
+        addr & !(align - 1)
+    } else if align == 0 {
+        addr
+    } else {
+        panic!("`align` must be a power of 2");
+    }
+}
+
+/// Align upwards. Returns the smallest x with alignment `align`
+/// so that x >= addr. The alignment must be a power of 2.
+pub fn align_up(addr: usize, align: usize) -> usize {
+    align_down(addr + align - 1, align)
 }
