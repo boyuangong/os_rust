@@ -1,9 +1,9 @@
-use crate::hole::{HoleList};
+use crate::hole::{HoleList, Hole, align_up};
 use alloc::alloc::{Alloc, AllocErr, Layout};
 use core::ptr::NonNull;
 use core::ptr::null_mut;
 use core::alloc::{GlobalAlloc};
-
+use core::mem;
 
 use core::ops::Deref;
 
@@ -56,6 +56,13 @@ impl Heap {
     /// enough. The runtime is in O(n) where n is the number of free blocks, but it should be
     /// reasonably fast for small allocations.
     pub fn allocate_first_fit(&mut self, layout: Layout) -> Result<NonNull<u8>, AllocErr> {
+        let mut size = layout.size();
+        if size < HoleList::min_size() {
+            size = HoleList::min_size();
+        }
+        let size = align_up(size, mem::align_of::<Hole>());
+        let layout = Layout::from_size_align(size, layout.align()).unwrap();
+
         self.holes.allocate_first_fit(layout)
     }
 
@@ -67,6 +74,14 @@ impl Heap {
     /// correct place. If the freed block is adjacent to another free block, the blocks are merged
     /// again. This operation is in `O(n)` since the list needs to be sorted by address.
     pub unsafe fn deallocate(&mut self, ptr: NonNull<u8>, layout: Layout) {
+        let mut size = layout.size();
+        if size < HoleList::min_size() {
+            size = HoleList::min_size();
+        }
+        let size = align_up(size, mem::align_of::<Hole>());
+        let layout = Layout::from_size_align(size, layout.align()).unwrap();
+
+        self.holes.deallocate(ptr, layout);
     }
 
     /// Returns the bottom address of the heap.
@@ -82,6 +97,10 @@ impl Heap {
     /// Return the top address of the heap
     pub fn top(&self) -> usize {
         self.bottom + self.size
+    }
+
+    pub fn first_hole(&self) -> Option<(usize, usize)> {
+        self.holes.first_hole()
     }
 
 }

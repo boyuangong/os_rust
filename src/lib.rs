@@ -15,6 +15,7 @@ extern crate alloc;
 #[cfg(feature = "use_spin")]
 extern crate spin;
 use alloc::alloc::{Layout};
+use alloc::boxed::Box;
 
 pub mod gdt;
 pub mod serial;
@@ -50,3 +51,4 @@ fn alloc_error(_layout: Layout) -> ! {
 
 #[global_allocator]
 pub static HEAP_ALLOCATOR: LockedHeap = LockedHeap::empty();
+

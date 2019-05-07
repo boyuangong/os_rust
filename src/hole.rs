@@ -2,6 +2,7 @@ use alloc::alloc::{AllocErr, Layout};
 use core::ptr::NonNull;
 use core::mem::size_of;
 
+
 pub struct HoleList {
     first: Hole, // dummy
 }
@@ -21,7 +22,7 @@ impl HoleList {
     /// creates a hole at the given `hole_addr`. This can cause undefined behavior if this address
     /// is invalid or if memory from the `[hole_addr, hole_addr+size) range is used somewhere else.
     pub unsafe fn new(hole_addr: usize, hole_size: usize) -> HoleList {
-        assert!(size_of::<Hole>() == Self::min_size());
+        assert_eq!(size_of::<Hole>(), Self::min_size());
 
         let ptr = hole_addr as *mut Hole;
         ptr.write(Hole {
@@ -47,13 +48,36 @@ impl HoleList {
         assert!(layout.size() >= Self::min_size());
 
         allocate_first_fit(&mut self.first, layout).map(|allocation| {
+            if let Some(padding) = allocation.front_padding {
+                deallocate(&mut self.first, padding.addr, padding.size);
+            }
+            if let Some(padding) = allocation.back_padding {
+                deallocate(&mut self.first, padding.addr, padding.size);
+            }
             NonNull::new(allocation.info.addr as *mut u8).unwrap()
         })
+    }
+
+    /// Frees the allocation given by `ptr` and `layout`. `ptr` must be a pointer returned by a call
+    /// to the `allocate_first_fit` function with identical layout. Undefined behavior may occur for
+    /// invalid arguments.
+    /// This function walks the list and inserts the given block at the correct place. If the freed
+    /// block is adjacent to another free block, the blocks are merged again.
+    /// This operation is in `O(n)` since the list needs to be sorted by address.
+    pub unsafe fn deallocate(&mut self, ptr: NonNull<u8>, layout: Layout) {
+        deallocate(&mut self.first, ptr.as_ptr() as usize, layout.size())
     }
 
     /// Returns the minimal allocation size. Smaller allocations or deallocations are not allowed.
     pub fn min_size() -> usize {
         size_of::<usize>() * 2
+    }
+
+    pub fn first_hole(&self) -> Option<(usize, usize)> {
+        self.first
+            .next
+            .as_ref()
+            .map(|hole| ((*hole) as *const Hole as usize, hole.size))
     }
 
 }
@@ -128,6 +152,10 @@ fn split_hole(hole: HoleInfo, required_layout: Layout) -> Option<Allocation> {
     let required_size = required_layout.size();
     let required_align = required_layout.align();
 
+    if required_size > hole.size {
+        return None;
+    }
+
     let (aligned_addr, front_padding) = if hole.addr == align_up(hole.addr, required_align) {
         // hole has already the required alignment
         (hole.addr, None)
@@ -143,11 +171,12 @@ fn split_hole(hole: HoleInfo, required_layout: Layout) -> Option<Allocation> {
         )
     };
 
+//    if aligned_addr + required_size > hole.addr + hole.size {
+//        // hole is too small
+//        return None;
+//    }
+//
     let aligned_hole = {
-        if aligned_addr + required_size > hole.addr + hole.size {
-            // hole is too small
-            return None;
-        }
         HoleInfo {
             addr: aligned_addr,
             size: hole.size - (aligned_addr - hole.addr),
@@ -180,23 +209,6 @@ fn split_hole(hole: HoleInfo, required_layout: Layout) -> Option<Allocation> {
 
 
 
-/// A fixed size heap backed by a linked list of free memory blocks.
-pub struct Heap {
-    bottom: usize,
-    size: usize,
-    holes: HoleList,
-}
-
-impl Heap {
-    /// Creates an empty heap. All allocate calls will return `None`.
-    pub const fn empty() -> Heap {
-        Heap {
-            bottom: 0,
-            size: 0,
-            holes: HoleList::empty(),
-        }
-    }
-}
 
 /// Align downwards. Returns the greatest x with alignment `align`
 /// so that x <= addr. The alignment must be a power of 2.
@@ -214,4 +226,95 @@ pub fn align_down(addr: usize, align: usize) -> usize {
 /// so that x >= addr. The alignment must be a power of 2.
 pub fn align_up(addr: usize, align: usize) -> usize {
     align_down(addr + align - 1, align)
+}
+
+/// Frees the allocation given by `(addr, size)`. It starts at the given hole and walks the list to
+/// find the correct place (the list is sorted by address).
+fn deallocate(mut hole: &mut Hole, addr: usize, mut size: usize) {
+    loop {
+        assert!(size >= HoleList::min_size());
+
+        let hole_addr = if hole.size == 0 {
+            // It's the dummy hole, which is the head of the HoleList. It's somewhere on the stack,
+            // so it's address is not the address of the hole. We set the addr to 0 as it's always
+            // the first hole.
+            0
+        } else {
+            // tt's a real hole in memory and its address is the address of the hole
+            hole as *mut _ as usize
+        };
+
+        // Each freed block must be handled by the previous hole in memory. Thus the freed
+        // address must be always behind the current hole.
+        assert!(
+            hole_addr + hole.size <= addr,
+            "invalid deallocation (probably a double free)"
+        );
+
+        // get information about the next block
+        let next_hole_info = hole.next.as_ref().map(|next| next.info());
+
+        match next_hole_info {
+            Some(next) if hole_addr + hole.size == addr && addr + size == next.addr => {
+                // block fills the gap between this hole and the next hole
+                // before:  ___XXX____YYYYY____    where X is this hole and Y the next hole
+                // after:   ___XXXFFFFYYYYY____    where F is the freed block
+
+                hole.size += size + next.size; // merge the F and Y blocks to this X block
+                hole.next = hole.next.as_mut().unwrap().next.take(); // remove the Y block
+            }
+            _ if hole_addr + hole.size == addr => {
+                // block is right behind this hole but there is used memory after it
+                // before:  ___XXX______YYYYY____    where X is this hole and Y the next hole
+                // after:   ___XXXFFFF__YYYYY____    where F is the freed block
+
+                // or: block is right behind this hole and this is the last hole
+                // before:  ___XXX_______________    where X is this hole and Y the next hole
+                // after:   ___XXXFFFF___________    where F is the freed block
+
+                hole.size += size; // merge the F block to this X block
+            }
+            Some(next) if addr + size == next.addr => {
+                // block is right before the next hole but there is used memory before it
+                // before:  ___XXX______YYYYY____    where X is this hole and Y the next hole
+                // after:   ___XXX__FFFFYYYYY____    where F is the freed block
+
+                hole.next = hole.next.as_mut().unwrap().next.take(); // remove the Y block
+                size += next.size; // free the merged F/Y block in next iteration
+                continue;
+            }
+            Some(next) if next.addr <= addr => {
+                // block is behind the next hole, so we delegate it to the next hole
+                // before:  ___XXX__YYYYY________    where X is this hole and Y the next hole
+                // after:   ___XXX__YYYYY__FFFF__    where F is the freed block
+
+                hole = move_helper(hole).next.as_mut().unwrap(); // start next iteration at next hole
+                continue;
+            }
+            _ => {
+                // block is between this and the next hole
+                // before:  ___XXX________YYYYY_    where X is this hole and Y the next hole
+                // after:   ___XXX__FFFF__YYYYY_    where F is the freed block
+
+                // or: this is the last hole
+                // before:  ___XXX_________    where X is this hole
+                // after:   ___XXX__FFFF___    where F is the freed block
+
+                let new_hole = Hole {
+                    size: size,
+                    next: hole.next.take(), // the reference to the Y block (if it exists)
+                };
+                // write the new hole to the freed memory
+                let ptr = addr as *mut Hole;
+                unsafe { ptr.write(new_hole) };
+                // add the F block as the next block of the X block
+                hole.next = Some(unsafe { &mut *ptr });
+            }
+        }
+        break;
+    }
+}
+
+fn move_helper<T>(x: T) -> T {
+    x
 }
