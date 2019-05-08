@@ -27,36 +27,37 @@ fn kernel_main(boot_info: &'static BootInfo) -> ! {
 
     let mut recursive_page_table = unsafe { memory::init(boot_info.p4_table_addr as usize) };
 
-    println!("p4 address at {}",boot_info.p4_table_addr);
+    println!("p4 table address at {:#x}",boot_info.p4_table_addr);
 
     unsafe{
         os_rust::HEAP_ALLOCATOR.lock().init(boot_info.p4_table_addr as usize + 0x10, HEAP_SIZE);
     }
 
-//    for i in 0..10000 {
-//        println!("Some String");
-//    }
 
-    println!("{:?}", os_rust::HEAP_ALLOCATOR.lock().first_hole());
+    println!("first hole of the allocator at {:?}", os_rust::HEAP_ALLOCATOR.lock().first_hole());
+    println!("bottom of the allocator at {:#x}", os_rust::HEAP_ALLOCATOR.lock().bottom());
 
+    println!("Test small size layout");
     let mut vec_test1 = vec![1];
     for i in &vec_test1 {
         println!("{} ", i);
     }
 
+    println!("Test a vector");
     let mut vec_test = vec![1i32, 2, 3, 4, 5];
     for i in &vec_test {
         println!("{} ", i);
     }
 
-    println!("{:?}", os_rust::HEAP_ALLOCATOR.lock().first_hole());
 
-//    for i in 10..20{
-//        vec_test.push(i);
-//    }
+    println!("Change of first hole");
+    println!("first hole of the allocator at {:?}", os_rust::HEAP_ALLOCATOR.lock().first_hole());
 
-    println!("{:?}", os_rust::HEAP_ALLOCATOR.lock().first_hole());
 
+    println!("Test push into a vector");
+    for i in 10..20{
+        vec_test.push(i);
+    }
     println!("{:?}", vec_test);
 
     println!("It did not crash!");

@@ -25,7 +25,7 @@ pub mod memory;
 pub mod hole;
 pub mod heap_allocator;
 
-use heap_allocator::LockedHeap;
+use heap_allocator::GlobalHeapAllocator;
 
 
 pub unsafe fn exit_qemu() {
@@ -44,11 +44,10 @@ pub fn hlt_loop() -> ! {
 // define what happens in an Out Of Memory (OOM) condition
 #[alloc_error_handler]
 fn alloc_error(_layout: Layout) -> ! {
-
     loop {}
 }
 
 
 #[global_allocator]
-pub static HEAP_ALLOCATOR: LockedHeap = LockedHeap::empty();
+pub static HEAP_ALLOCATOR: GlobalHeapAllocator = GlobalHeapAllocator::empty();
 

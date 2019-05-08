@@ -10,75 +10,54 @@ use core::ops::Deref;
 use spin::Mutex;
 
 /// A fixed size heap backed by a linked list of free memory blocks.
-pub struct Heap {
+pub struct HeapAllocator {
     bottom: usize,
     size: usize,
     holes: HoleList,
 }
 
-impl Heap {
-    /// Creates an empty heap. All allocate calls will return `None`.
-    pub const fn empty() -> Heap {
-        Heap {
+impl HeapAllocator {
+    pub const fn empty() -> HeapAllocator {
+        HeapAllocator {
             bottom: 0,
             size: 0,
             holes: HoleList::empty(),
         }
     }
 
-    /// Initializes an empty heap
-    ///
-    /// # Unsafety
-    ///
-    /// This function must be called at most once and must only be used on an
-    /// empty heap.
+    /// init help with given start point and size
+    /// The allocator will claim memory `[heap_bottom, heap_bottom + heap_size)`
     pub unsafe fn init(&mut self, heap_bottom: usize, heap_size: usize) {
+
         self.bottom = heap_bottom;
         self.size = heap_size;
         self.holes = HoleList::new(heap_bottom, heap_size);
     }
 
-    /// Creates a new heap with the given `bottom` and `size`. The bottom address must be valid
-    /// and the memory in the `[heap_bottom, heap_bottom + heap_size)` range must not be used for
-    /// anything else. This function is unsafe because it can cause undefined behavior if the
-    /// given address is invalid.
-    pub unsafe fn new(heap_bottom: usize, heap_size: usize) -> Heap {
-        Heap {
-            bottom: heap_bottom,
-            size: heap_size,
-            holes: HoleList::new(heap_bottom, heap_size),
-        }
-    }
 
-    /// Allocates a chunk of the given size with the given alignment. Returns a pointer to the
-    /// beginning of that chunk if it was successful. Else it returns `None`.
-    /// This function scans the list of free memory blocks and uses the first block that is big
-    /// enough. The runtime is in O(n) where n is the number of free blocks, but it should be
-    /// reasonably fast for small allocations.
-    pub fn allocate_first_fit(&mut self, layout: Layout) -> Result<NonNull<u8>, AllocErr> {
+    /// call allocate_first_fit in Holes;
+    /// If the layout size is smaller than the min_size, function will extend the layout
+    /// to the min_size;
+    pub fn alloc(&mut self, layout: Layout) -> Result<NonNull<u8>, AllocErr> {
         let mut size = layout.size();
         if size < HoleList::min_size() {
             size = HoleList::min_size();
         }
-        let size = align_up(size, mem::align_of::<Hole>());
+
         let layout = Layout::from_size_align(size, layout.align()).unwrap();
 
-        self.holes.allocate_first_fit(layout)
+        self.holes.alloc(layout)
     }
 
-    /// Frees the given allocation. `ptr` must be a pointer returned
-    /// by a call to the `allocate_first_fit` function with identical size and alignment. Undefined
-    /// behavior may occur for invalid arguments, thus this function is unsafe.
-    ///
-    /// This function walks the list of free memory blocks and inserts the freed block at the
-    /// correct place. If the freed block is adjacent to another free block, the blocks are merged
-    /// again. This operation is in `O(n)` since the list needs to be sorted by address.
-    pub unsafe fn deallocate(&mut self, ptr: NonNull<u8>, layout: Layout) {
+
+    /// Deallocate the given pointer 'ptr' which point memory allocate by the current allocator
+    /// If the layout size is smaller than the min_size, function will extend the layout
+    /// to the min_size;
+    pub unsafe fn dealloc(&mut self, ptr: NonNull<u8>, layout: Layout) {
         let mut size = layout.size();
         if size < HoleList::min_size() {
             size = HoleList::min_size();
         }
-        let size = align_up(size, mem::align_of::<Hole>());
         let layout = Layout::from_size_align(size, layout.align()).unwrap();
 
         self.holes.deallocate(ptr, layout);
@@ -105,32 +84,29 @@ impl Heap {
 
 }
 
-unsafe impl Alloc for Heap {
+unsafe impl Alloc for HeapAllocator {
     unsafe fn alloc(&mut self, layout: Layout) -> Result<NonNull<u8>, AllocErr> {
-        self.allocate_first_fit(layout)
+        self.alloc(layout)
     }
 
     unsafe fn dealloc(&mut self, ptr: NonNull<u8>, layout: Layout) {
-        self.deallocate(ptr, layout)
+        self.dealloc(ptr, layout)
     }
 }
 
 
-pub struct LockedHeap(Mutex<Heap>);
+
+// Mutex ensured the Alloc can be shared reference
+pub struct GlobalHeapAllocator(Mutex<HeapAllocator>);
 
 
-impl LockedHeap {
-    /// Creates an empty heap. All allocate calls will return `None`.
-    pub const fn empty() -> LockedHeap {
-        LockedHeap(Mutex::new(Heap::empty()))
+impl GlobalHeapAllocator {
+    pub const fn empty() -> GlobalHeapAllocator {
+        GlobalHeapAllocator(Mutex::new(HeapAllocator::empty()))
     }
 
-    /// Creates a new heap with the given `bottom` and `size`. The bottom address must be valid
-    /// and the memory in the `[heap_bottom, heap_bottom + heap_size)` range must not be used for
-    /// anything else. This function is unsafe because it can cause undefined behavior if the
-    /// given address is invalid.
-    pub unsafe fn new(heap_bottom: usize, heap_size: usize) -> LockedHeap {
-        LockedHeap(Mutex::new(Heap {
+    pub unsafe fn new(heap_bottom: usize, heap_size: usize) -> GlobalHeapAllocator {
+        GlobalHeapAllocator(Mutex::new(HeapAllocator {
             bottom: heap_bottom,
             size: heap_size,
             holes: HoleList::new(heap_bottom, heap_size),
@@ -139,20 +115,21 @@ impl LockedHeap {
 }
 
 
-impl Deref for LockedHeap {
-    type Target = Mutex<Heap>;
+//Dereference implementation for LockedHeap for lock()
+impl Deref for GlobalHeapAllocator {
+    type Target = Mutex<HeapAllocator>;
 
-    fn deref(&self) -> &Mutex<Heap> {
+    fn deref(&self) -> &Mutex<HeapAllocator> {
         &self.0
     }
 }
 
-
-unsafe impl GlobalAlloc for LockedHeap {
+// Implement GlobalAllocator as required by alloc
+unsafe impl GlobalAlloc for GlobalHeapAllocator {
     unsafe fn alloc(&self, layout: Layout) -> *mut u8 {
         self.0
             .lock()
-            .allocate_first_fit(layout)
+            .alloc(layout)
             .ok()
             .map_or(0 as *mut u8, |allocation| allocation.as_ptr())
     }
@@ -160,7 +137,7 @@ unsafe impl GlobalAlloc for LockedHeap {
     unsafe fn dealloc(&self, ptr: *mut u8, layout: Layout) {
         self.0
             .lock()
-            .deallocate(NonNull::new_unchecked(ptr), layout)
+            .dealloc(NonNull::new_unchecked(ptr), layout)
     }
 }
 
